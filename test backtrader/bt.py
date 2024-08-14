@@ -43,114 +43,112 @@ df=yf.download(ticker)
 #df to txt sep
 df.to_csv(ticker[0] + '.txt', header=True, index=True, sep=',', mode='w')
 
-# Create a Stratey
-class TestStrategy(bt.Strategy):
+def calculate_volatility(data, period = 14):
+    returns = data['close'].pct_change()
+    volatility = returns.rolling(window=period).std()
+    return volatility
+
+
+
+
+class SMA_Strategy_2(bt.Strategy):
     params = (
-        ('maperiod', 15),
+        ('maperiod_200', 200),
+        ('maperiod_5', 5),
     )
 
     def log(self, txt, dt=None):
-        ''' Logging function fot this strategy'''
+        ''' Logging function for this strategy'''
         dt = dt or self.datas[0].datetime.date(0)
         print('%s, %s' % (dt.isoformat(), txt))
 
     def __init__(self):
-        # Keep a reference to the "close" line in the data[0] dataseries
         self.dataclose = self.datas[0].close
-
-        # To keep track of pending orders and buy price/commission
+        self.dataopen = self.datas[0].open
+        
         self.order = None
         self.buyprice = None
         self.buycomm = None
 
-        # Add a MovingAverageSimple indicator
-        self.sma = bt.indicators.SimpleMovingAverage(
-            self.datas[0], period=self.params.maperiod)
+        # Indicators
+        self.sma_200 = bt.indicators.SimpleMovingAverage(self.datas[0], period=self.params.maperiod_200)
+        self.sma_5 = bt.indicators.SimpleMovingAverage(self.datas[0], period=self.params.maperiod_5)
+        # calcualte winrate
+        self.winrate = 0
+        self.win = 0
+        self.loss = 0
 
-        # Indicators for the plotting show
-        bt.indicators.ExponentialMovingAverage(self.datas[0], period=25)
-        bt.indicators.WeightedMovingAverage(self.datas[0], period=25,
-                                            subplot=True)
-        bt.indicators.StochasticSlow(self.datas[0])
-        bt.indicators.MACDHisto(self.datas[0])
-        rsi = bt.indicators.RSI(self.datas[0])
-        bt.indicators.SmoothedMovingAverage(rsi, period=10)
-        bt.indicators.ATR(self.datas[0], plot=False)
+        self.position_open = False
+        self.entry_price = None
 
     def notify_order(self, order):
         if order.status in [order.Submitted, order.Accepted]:
-            # Buy/Sell order submitted/accepted to/by broker - Nothing to do
             return
 
-        # Check if an order has been completed
-        # Attention: broker could reject order if not enough cash
         if order.status in [order.Completed]:
             if order.isbuy():
-                self.log(
-                    'BUY EXECUTED, Price: %.2f, Cost: %.2f, Comm %.2f' %
-                    (order.executed.price,
-                     order.executed.value,
-                     order.executed.comm))
+                self.log(f'BUY EXECUTED, Price: {order.executed.price:.2f}, Cost: {order.executed.value:.2f}, Comm: {order.executed.comm:.2f}')
+                self.entry_price = order.executed.price
+            else:
+                self.log(f'SELL EXECUTED, Price: {order.executed.price:.2f}, Cost: {order.executed.value:.2f}, Comm: {order.executed.comm:.2f}')
+                #calculate winrate
+                if order.executed.price > self.entry_price:
+                    self.win += 1
+                else:
+                    self.loss += 1
 
-                self.buyprice = order.executed.price
-                self.buycomm = order.executed.comm
-            else:  # Sell
-                self.log('SELL EXECUTED, Price: %.2f, Cost: %.2f, Comm %.2f' %
-                         (order.executed.price,
-                          order.executed.value,
-                          order.executed.comm))
-
+                    self.winrate = self.win / (self.win + self.loss)
+                self.log(f'Winrate: {self.winrate:.2f}')
+                #print amount of trades
+                self.log(f'Amount of trades: {self.win + self.loss}')
             self.bar_executed = len(self)
-
+        
         elif order.status in [order.Canceled, order.Margin, order.Rejected]:
             self.log('Order Canceled/Margin/Rejected')
 
-        # Write down: no pending order
-        self.order = None
+        self.order = None   
 
     def notify_trade(self, trade):
         if not trade.isclosed:
             return
 
-        self.log('OPERATION PROFIT, GROSS %.2f, NET %.2f' %
-                 (trade.pnl, trade.pnlcomm))
+        self.log(f'OPERATION PROFIT, GROSS {trade.pnl:.2f}, NET {trade.pnlcomm:.2f}')
 
     def next(self):
-        # Simply log the closing price of the series from the reference
-        self.log('Close, %.2f' % self.dataclose[0])
-
-        # Check if an order is pending ... if yes, we cannot send a 2nd one
         if self.order:
             return
 
-        # Check if we are in the market
         if not self.position:
-
-            # Not yet ... we MIGHT BUY if ...
-            if self.dataclose[0] > self.sma[0]:
-
-                # BUY, BUY, BUY!!! (with all possible default parameters)
-                self.log('BUY CREATE, %.2f' % self.dataclose[0])
-
-                # Keep track of the created order to avoid a 2nd order
-                self.order = self.buy()
+            # Check if the conditions for buying are met
+            if self.dataclose[0] > self.sma_200[0]:
+                if (self.dataclose[0] < self.dataopen[0] and  # Day 1: Red candle
+                    self.dataclose[-1] < self.dataopen[-1] and  # Day 1: Red candle
+                    self.dataclose[-2] < self.dataopen[-2] and  # Day 2: Red candle
+                    self.dataclose[0] < self.dataclose[-1] and  # Day 1: Open < Previous Close
+                    self.dataclose[-1] < self.dataclose[-2] and  # Day 1: Open < Previous Close
+                    self.dataclose[-2] < self.dataclose[-3]):  # Day 2: Open < Previous Close
+                        # Day 3: Open < Previous Close
+                    
+                    self.log(f'BUY CREATE, {self.dataclose[0]:.2f}')
+                    self.order = self.buy()
 
         else:
-
-            if self.dataclose[0] < self.sma[0]:
-                # SELL, SELL, SELL!!! (with all possible default parameters)
-                self.log('SELL CREATE, %.2f' % self.dataclose[0])
-
-                # Keep track of the created order to avoid a 2nd order
+            # Check if the conditions for selling are met
+            if self.dataclose[0] > self.sma_5[0]:
+                self.log(f'SELL CREATE, {self.dataclose[0]:.2f}')
                 self.order = self.sell()
 
+
+
+                
+        
 
 if __name__ == '__main__':
     # Create a cerebro entity
     cerebro = bt.Cerebro()
 
     # Add a strategy
-    cerebro.addstrategy(TestStrategy)
+    cerebro.addstrategy(SMA_Strategy_2)
 
     # Datas are in a subfolder of the samples. Need to find where the script is
     # because it could have been called from anywhere
@@ -177,7 +175,7 @@ if __name__ == '__main__':
     cerebro.addsizer(bt.sizers.FixedSize, stake=10)
 
     # Set the commission
-    cerebro.broker.setcommission(commission=0.01)
+    cerebro.broker.setcommission(commission=0.00)
 
     # Print out the starting conditions
     print('Starting Portfolio Value: %.2f' % cerebro.broker.getvalue())
@@ -188,5 +186,11 @@ if __name__ == '__main__':
     # Print out the final result
     print('Final Portfolio Value: %.2f' % cerebro.broker.getvalue())
 
+    #add in the plot the winrate
+    
+
     # Plot the result
-    cerebro.plot()
+    #agrega literalmente el winrate dentro del grafico
+    
+    
+    cerebro.plot(style='candlestick')
