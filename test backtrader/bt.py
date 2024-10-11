@@ -43,6 +43,14 @@ df=yf.download(ticker)
 #df to txt sep
 df.to_csv(ticker[0] + '.txt', header=True, index=True, sep=',', mode='w')
 
+#move df copy to folder test_backtrader
+
+os.makedirs('test backtrader', exist_ok=True)
+df.to_csv('test backtrader/' + ticker[0] + '.txt', header=True, index=True, sep=',', mode='w')
+
+
+
+
 def calculate_volatility(data, period = 14):
     returns = data['close'].pct_change()
     volatility = returns.rolling(window=period).std()
@@ -185,6 +193,12 @@ if __name__ == '__main__':
 
     # Print out the final result
     print('Final Portfolio Value: %.2f' % cerebro.broker.getvalue())
+
+    #need to show a graf with winrate, profit, and number of trades
+
+    
+
+    
 
     #add in the plot the winrate
     
